@@ -1,0 +1,133 @@
+################################ 311 data #########################################
+
+# Load in favorite libraries
+library(dplyr)
+library(ggvis)
+library(streamgraph)
+library(RSocrata)
+library(ggplot2)
+library(ggthemes)
+library(lubridate)
+library(DT)
+library(stringi)
+
+# Read in the data from the SODA API
+# I have removed my personal API token 
+yr311 <- read.socrata("https://data.cityofnewyork.us/Social-Services/Oct14-Sep2015/44sz-rfgs", token = "your API token")
+# or read from a local copy
+yr311 <- tbl_df(read.csv("Oct14-Sep2015.csv", header = TRUE, stringsAsFactors = FALSE))
+
+###   Do some basic cleaning/wrangling of the data  ###
+
+# convert the date columns from text to date format
+yr311$Created.Date <- as.POSIXct(strptime(yr311$Created.Date, format = "%m/%d/%Y %I:%M:%S %p"))
+yr311$Closed.Date <- as.POSIXct(strptime(yr311$Closed.Date, format = "%m/%d/%Y %I:%M:%S %p"))
+
+# Change a few of the column names for ease:
+names(yr311)[c(2,3,4)] <- c("Complaint", "Zip", "Address")
+
+# Get ride of NA's and unspecified borough entries
+yr311 <- yr311 %>% filter(Created.Date = !is.na(Created.Date), Borough != "Unspecified")
+
+# Loop through the columns and convert any with class chr to Proper Case (or UPPER or lower) for consistency
+for(col in names(yr311)){
+  
+    if(class(yr311[[col]]) == "character") {
+    yr311[[col]] <- stri_trans_totitle(yr311[[col]])
+  }
+
+}
+
+### Start exploratory analysis  ###
+
+# Aggregate by borough and find the top 5 complaints by borough
+top.comps <- yr311 %>%
+              group_by(Borough, Complaint) %>%
+              summarise(Calls = n()) %>%
+              mutate(Call.Rank = rank(Calls)) %>%
+              filter(Call.Rank > max(Call.Rank)-5) %>%
+              arrange(desc(Call.Rank))
+            
+top.comps$Call.Rank <- NULL
+
+# Build a datatable for the top.comps data:
+datatable(top.comps, rownames = FALSE,
+          caption = "Table 1: Top Five Complaints by Borough",
+          options = list(
+            initComplete = JS(
+              "function(settings, json) {",
+              "$(this.api().table().header()).css({'background-color': '#294A6A', 'color': '#fff'});",
+              "}")
+          ))
+
+
+# Aggregate requests by day of week and look at top 5 most common requests
+peakcalls <- yr311 %>%
+              group_by(Day = wday(Created.Date, label = TRUE),
+                       Complaint) %>%
+              summarise(Complaints = n()/52) %>%
+              mutate(Call.Rank = rank(Complaints)) %>%
+              filter(Call.Rank > max(Call.Rank)-5) %>%
+              arrange(desc(Call.Rank))
+
+# Create line graph of number of requests against day grouped by request type
+peakcalls.plot <- ggplot(peakcalls, aes(Day, Complaints, group = Complaint)) + 
+                    geom_line(aes(color = Complaint)) + 
+                      scale_color_stata() +
+                        ggtitle("Top Average Request Types")
+  
+# Aggregate requests by time of day
+callsbytime <- yr311 %>%
+                group_by(Time = hour(Created.Date),
+                         Complaint) %>%
+                summarise(Complaints = round(n()/52)) %>%
+                mutate(Call.Rank = rank(Complaints)) %>%
+                filter(Call.Rank > max(Call.Rank)-5) %>%
+                arrange(desc(Call.Rank))
+
+callsbytime.plot <- ggplot(callsbytime, aes(Time, Complaints, group = Complaint)) + 
+                        geom_line(aes(color = Complaint)) +
+                                scale_color_stata()
+
+# Create horizontal bar plot:
+pc.p <- ggplot(peakcalls, aes(Day, Calls, fill = factor(Complaint))) + 
+          geom_bar(stat = "identity", position = "dodge") + 
+          ggtitle("Top 5 Average 311 Service Requests Types by Day") +
+          coord_flip() + 
+          scale_fill_stata(name = "Complaint Type") 
+
+
+# Find the top 5 address with most service requests:
+top.adds <- yr311 %>%
+        group_by(Address) %>%
+        summarise(Calls = n()) %>%
+        mutate(Call.Rank = rank(Calls)) %>%
+        filter(Call.Rank > max(Call.Rank)-6,
+               Address > 1) %>%
+        arrange(desc(Calls))
+
+top.adds$Call.Rank <- NULL
+
+
+## Now extract only the top 5 and look at their distribution of complaints by type
+# Extract address names
+adds <- as.vector(top.adds$Address)
+
+# Aggregate by Address and Complaint and filter by the adds object
+top.adds.comps <- yr311 %>%
+                    group_by(Address, Complaint) %>%
+                    summarise(Calls = n()) %>%
+                    filter(Address %in% adds) %>%
+                    arrange(desc(Calls))
+
+print(top.adds.comps, n = 48)
+
+# Load top.adds into a datatable
+datatable(top.adds.comps, rownames = FALSE,
+          caption = "Table 1: Addresses with Most Service Requests",
+          options = list(
+            initComplete = JS(
+              "function(settings, json) {",
+              "$(this.api().table().header()).css({'background-color': '#294A6A', 'color': '#fff'});",
+              "}")
+          ))
